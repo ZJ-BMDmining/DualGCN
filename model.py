@@ -25,7 +25,7 @@ from torch_geometric.data import Batch,Data
 from collections import Counter 
 from torch.utils import data as tdata
 from sklearn.model_selection import StratifiedKFold
-
+from timm.models.layers import DropPath, trunc_normal_
 
 
 import torch
@@ -49,6 +49,8 @@ class SAGEConv(MessagePassing):
         self.out_channels = out_channels
         self.normalize = normalize
 
+
+
         self.weight = Parameter(torch.Tensor(self.in_channels, out_channels))
         if self.shared_weight:
             self.self_weight = self.weight 
@@ -61,6 +63,9 @@ class SAGEConv(MessagePassing):
             self.register_parameter('bias', None)
 
         self.reset_parameters()
+
+
+
 
     def reset_parameters(self):
         uniform(self.in_channels, self.weight)
@@ -76,6 +81,7 @@ class SAGEConv(MessagePassing):
 
     def message(self, x_j, edge_weight):
         return x_j if edge_weight is None else edge_weight.view(-1, 1,1) * x_j
+
 
     def update(self, aggr_out):
 
@@ -98,30 +104,94 @@ class SAGEConv(MessagePassing):
                                    self.out_channels)
 
 
-
-from torch.nn.init import normal,uniform_
 def init_weights(m):
     if type(m) == nn.Linear:
-        # nn.init.kaiming_normal_(m.weight, mode='fan_out')
+
         nn.init.xavier_uniform(m.weight)
         m.bias.data.fill_(0.01)
 
 def help_bn(bn1,x):
-    #         dim1, dim2,dim3 = x.shape 
-    x = x.permute(1,0,2)  # #samples x #nodes x #features
+
+    x = x.permute(1,0,2)
     x = bn1(x)
-    x = x.permute(1,0,2) # #nodes x #samples x #features
+    x = x.permute(1,0,2)
     return x
+
+class Mlp(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        hidden_features=None,
+        out_features=None,
+        act_layer=nn.GELU,
+        drop=0.0,
+    ):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+
+class CrossAttention(nn.Module):
+    def __init__(self, dim, num_heads, qkv_bias=False, qk_scale=None, attn_drop=0.0, proj_drop=0.0):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+        self.cross_attn = nn.MultiheadAttention(dim, num_heads, dropout=attn_drop, bias=qkv_bias, kdim=dim, vdim=dim)
+        self.drop_path = DropPath(proj_drop) if proj_drop > 0.0 else nn.Identity()
+        self.gamma_1 = nn.Parameter(torch.ones((dim)), requires_grad=True)
+        self.gamma_2 = nn.Parameter(torch.ones((dim)), requires_grad=True)
+        self.mlp = Mlp(in_features=dim, hidden_features=int(dim * 4), drop=proj_drop)
+
+    def forward(self, x_text, x_imag):
+        q = self.norm1(x_text)
+        k = v = self.norm2(x_imag)
+        cross_attn_out, _ = self.cross_attn(q, k, v)
+        x_text = x_text + self.drop_path(self.gamma_1 * cross_attn_out)
+        x_text = x_text + self.drop_path(self.gamma_2 * self.mlp(self.norm1(x_text)))
+        return x_text
+
+
+
+class ConvNet(nn.Module):
+    def __init__(self , in_channels ):
+        super(ConvNet, self).__init__()
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels=1024, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(in_channels = 1024, out_channels=512, kernel_size=3, padding=1)
+        self.max_pool = nn.AdaptiveMaxPool2d((2, 2))
+        self.avg_pool = nn.AdaptiveAvgPool2d((2, 2))
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = nn.ReLU()(x)
+
+        x = self.conv2(x)
+        x = nn.ReLU()(x)
+
+
+        x= self.avg_pool(x)
+        x= x.view(x.size(0), -1)
+        return x
 
 class DualGCN(nn.Module):
     def __init__(self,in_channel=1,mid_channel=8,out_channel=2,num_nodes=2207,edge_num=151215,
                 **args):
         super(DualGCN,self).__init__()
         self.mid_channel = mid_channel
-        self.dropout_ratio = args.get('dropout_ratio',0.3)
-        print('model dropout raito:',self.dropout_ratio)
+        self.dropout_ratio = args.get('dropout_ratio',0.2)
         n_out_nodes = num_nodes
-        # self.global_conv1_dim = 4*3
+
         self.global_conv1_dim = 12
         self.global_conv2_dim = args.get('global_conv2_dim',4)
         self.conv1 = SAGEConv(in_channel, mid_channel, )
@@ -135,11 +205,13 @@ class DualGCN(nn.Module):
         self.global_bn2 = torch.nn.BatchNorm2d(self.global_conv2_dim)
         self.global_act2 = nn.ReLU()
 
-            
+
         last_feature_node = 64
-        channel_list = [self.global_conv2_dim*n_out_nodes,256,64]
+
+        channel_list = [3000, 256, 64]
         if args.get('channel_list',False):
-            channel_list = [self.global_conv2_dim*n_out_nodes,128]
+
+            channel_list = [3000, 128]
             last_feature_node = 128
 
         self.nn = []
@@ -149,26 +221,35 @@ class DualGCN(nn.Module):
             if self.dropout_ratio >0:
                 self.nn.append(nn.Dropout(0.3))
             self.nn.append(nn.ReLU())
-        self.global_fc_nn =nn.Sequential(*self.nn)        
+        self.global_fc_nn =nn.Sequential(*self.nn)
         self.fc1 = nn.Linear(last_feature_node,out_channel)
-        
+
         self.edge_num = edge_num
-        self.weight_edge_flag = True  
-        # print('trainalbe edges :',self.weight_edge_flag)
+        self.weight_edge_flag = True
+
         if self.weight_edge_flag:
             self.edge_weight = nn.Parameter(t.ones(edge_num).float()*0.01)
-            # _=normal(self.edge_weight,mean=0,std=0.01)
-            # _ = uniform_(self.edge_weight,a=-2,b=2)
+
         else:
             self.edge_weight = None
-    
+
         self.reset_parameters()
 
 
+        self.cross_attention = CrossAttention(dim = 1000 , num_heads=8, qkv_bias=True , qk_scale=None,
+                                              attn_drop=0.0, proj_drop=0)
+
+        self.fc_reduce = nn.Linear(7000, 64)  # 将 7000 维降到 64 维
+
+        self.fc_reduce2 = nn.Linear(self.global_conv2_dim * num_nodes, 1000)  # 将 7000 维降到 64 维
+
+
+        self.conv1d_reduce = nn.Conv1d(in_channels=1, out_channels=64, kernel_size=7, stride=7)
+        self.fc_reduce = nn.Linear(42688, 1000)    ###ppmi-8
+
 
     def reset_parameters(self,):
-        # uniform(self.mid_channel, self.global_conv1.weight
-        # 
+
         self.conv1.apply(init_weights)
         nn.init.kaiming_normal_(self.global_conv1.weight, mode='fan_out')
         uniform(self.mid_channel, self.global_conv1.bias)
@@ -179,8 +260,7 @@ class DualGCN(nn.Module):
 
         self.global_fc_nn.apply(init_weights)
         self.fc1.apply(init_weights)
-        # uniform(self.in_channels, self.bias)
-        # uniform(self.in_channels,self.self_weight)
+
         pass
 
     def get_gcn_weight_penalty(self,mode='L2'):
@@ -190,21 +270,21 @@ class DualGCN(nn.Module):
         elif mode =='L2':
             func  = lambda x: t.sqrt(t.sum(x**2))
 
-        loss = 0 
+        loss = 0
 
         tmp = getattr(self.conv1,'weight',None)
-        if tmp is not None: 
+        if tmp is not None:
             loss += func(tmp)
 
         tmp = getattr(self.conv1,'self_weight',None)
-        if tmp is not None: 
+        if tmp is not None:
             loss += 1* func(tmp)
 
         tmp = getattr(self.global_conv1,'weight',None)
-        if tmp is not None: 
+        if tmp is not None:
             loss += func(tmp)
         tmp = getattr(self.global_conv2,'weight',None)
-        if tmp is not None: 
+        if tmp is not None:
             loss += func(tmp)
 
         return loss
@@ -213,9 +293,20 @@ class DualGCN(nn.Module):
     def forward(self,data,get_latent_varaible=False):
         x, edge_index, batch = data.x, data.edge_index, data.batch
 
+        gene_feature = x.detach().clone()
+        gene_feature1 = gene_feature.permute(1, 0, 2)
+        num_samples = gene_feature1.shape[0]
+        gene_feature2 = gene_feature1.view(num_samples, -1)
+
+        gene_feature6 = gene_feature.permute(1, 2, 0)
+        gene_feature6_reduced1 = self.conv1d_reduce(gene_feature6)
+        gene_feature6_reduced2 = gene_feature6_reduced1.view(gene_feature6_reduced1.size(0), -1)
+        gene_feature6_reduced = self.fc_reduce(gene_feature6_reduced2)  # (batch_size, 1000)
+
+
+
         if self.weight_edge_flag:
-            one_graph_edge_weight=torch.sigmoid(self.edge_weight)#*self.edge_num
-            edge_weight = one_graph_edge_weight
+            one_graph_edge_weight=torch.sigmoid(self.edge_weight)
         else:
             edge_weight = None
 
@@ -230,34 +321,13 @@ class DualGCN(nn.Module):
 
         x = x.permute(1,2,0)
 
-        
-
-        x1=x
-        x = torch.cat([x, x1], dim=1)
-
-
-
-        x = x.unsqueeze(dim=-1) # #samples x #features x #nodes x 1
-
-        chunks = torch.chunk(x, chunks=2, dim=1)  # 将 x 分成两个块
-        x= chunks[0]
-
-
-
-
-
-
+        x = x.unsqueeze(dim=-1)
         x = self.global_conv1(x)
-
-
-
-
 
 
         x = self.global_act1(x)
         x = self.global_bn1(x)
         if self.dropout_ratio >0: x = F.dropout(x, p=0.3, training=self.training)
-
 
         x = self.global_conv2(x)
         x = self.global_act1(x)
@@ -271,25 +341,18 @@ class DualGCN(nn.Module):
 
 
         x = x .view(num_samples,-1)
+        features = x.detach().clone()
 
+        features1 = self.fc_reduce2(x)
 
+        out = self.cross_attention(features1 , gene_feature6_reduced )
+        out_1 = torch.cat((out,features1 ), dim=1)
+        out_2 = torch.cat((out_1 , gene_feature6_reduced), dim=1 )
 
+        x = self.global_fc_nn(out_2)
 
-
-        features = x.detach().clone()  # 保存特征提取部分的输出
-
-
-
-        x = self.global_fc_nn(x)
-
-
-
-        if get_latent_varaible:
-            return x,features
-        else:
-            x = self.fc1(x)
-
-            return F.softmax(x, dim=-1),features
+        output = self.fc1(x)
+        return F.softmax(output, dim=-1), features
 
 
 

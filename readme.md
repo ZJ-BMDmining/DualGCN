@@ -1,8 +1,6 @@
 # DualGCN-GE: Integration of spatial-temporal representations from transcriptomics data with Dual-view Graph Convolutional Network to Identify Parkinson’s Disease Subtypes
 
-Based on the architecture of multi-view graph learning, this study proposes the
-DualGCN-GE method to detect various PD subtypes, by integrating spatial and temporal patterns from disease-associated
-transcriptomic data.
+Based on the architecture of multi-view graph learning, this study proposes the DualGCN-GE method to detect various PD subtypes, by integrating spatial and temporal patterns from disease-associated transcriptomic data.
 
 ## Architecture
 
@@ -18,7 +16,7 @@ The required packages can be installed using the following command:
 $ pip install -r requirements.txt
 ```
 
-## Data
+## Data availability
 
 The dataset can be accessed from the [AMP-PD](https://amp-pd.org/) website.
 
@@ -27,7 +25,3 @@ The dataset can be accessed from the [AMP-PD](https://amp-pd.org/) website.
 ```
 python   DualGCN.py -in <dataset.npz> -out <outputfolder> -bs <batch_size>
 ```
-
-## Result
-
-![Fig5A_PPMI_EightSubtype_Acc](./figures/Fig5A_PPMI_EightSubtype_Acc.jpg)

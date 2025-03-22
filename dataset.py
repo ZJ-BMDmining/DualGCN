@@ -31,11 +31,7 @@ def collate_func(batch):
     if isinstance(data0,Data):
         tmp_x = [xx['x'] for xx in batch]
         tmp_y = [xx['y'] for xx in batch]
-        # tmp_data = Data()
-        # tmp_data['x']= t.stack(tmp_x,dim=1)
-        # tmp_data['y']= t.cat(tmp_y) # 
-        # tmp_data['edge_index']=data0.edge_index 
-        # return Batch.from_data_list([tmp_data])
+
     elif isinstance(data0,(list,tuple)):
         tmp_x = [xx[0] for xx in batch]
         tmp_y = [xx[1] for xx in batch]
@@ -47,7 +43,7 @@ def collate_func(batch):
     tmp_data['batch'] = t.zeros_like(tmp_data['y'])
     tmp_data['num_graphs'] = 1 
     return tmp_data
-    # return Batch.from_data_list([tmp_data])
+
 
 
 class DataLoader(torch.utils.data.DataLoader):
@@ -60,20 +56,20 @@ class DataLoader(torch.utils.data.DataLoader):
               self).__init__(dataset, batch_size, shuffle, **kwargs)
 
 
-class ExprDataset(tdata.Dataset):#需要继承data.Dataset
+class ExprDataset(tdata.Dataset):
     def __init__(self,Expr,edge,y,device='cuda',):
         super(ExprDataset, self).__init__()
 
         print('processing...')
         self.gene_num = Expr.shape[1]
         if isinstance(edge,list):
-            print('multi graphs:',len(edge))
+
             self.edge_num = [x.shape[1] for x in edge]
 
             self.common_edge =[t.tensor(x).long().to(device) if not isinstance(x,t.Tensor) else x for x in edge]
 
         elif isinstance(edge,(np.ndarray,t.Tensor)):
-            print('only has 1 graph.')
+
             self.edge_num = edge.shape[1]
             self.common_edge = edge if isinstance(edge,t.Tensor) else  t.tensor(edge).long().to(device)
 
@@ -96,7 +92,6 @@ class ExprDataset(tdata.Dataset):#需要继承data.Dataset
         impute_indexs = np.arange(self.num_sam).tolist()
         np.random.seed(2240)
         for lab in np.unique(self.y):
-            # print('123,',max_num_types,np.sum(self.y==lab),dup_odds)
             if max_num_types/np.sum(self.y==lab) >dup_odds:
                 impute_size = int(max_num_types/dup_odds) - np.sum(self.y==lab)
                 print('duplicate #celltype %d with %d cells'%(lab,impute_size))
@@ -125,7 +120,6 @@ class ExprDataset(tdata.Dataset):#需要继承data.Dataset
         return ExprDataset(self.Expr[idx,:],self.common_edge,self.y[idx],)
     
     def __len__(self):
-        # You should change 0 to the total size of your dataset.
         return self.num_sam 
 
     def get(self,index):
@@ -133,6 +127,5 @@ class ExprDataset(tdata.Dataset):#需要继承data.Dataset
         data['x']= t.tensor(self.Expr[index,:].reshape([-1,self.num_expr_feaure])).float()
         data['y']= t.tensor(self.y[index].reshape([1,1])).long()  # 
         data['edge_index']=self.common_edge 
-        
-        # data.to(device)
+
         return data  
